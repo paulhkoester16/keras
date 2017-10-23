@@ -1377,6 +1377,215 @@ class TestBackend(object):
             with pytest.raises(TypeError):
                 K.variable('', dtype='unsupported')
 
+    @pytest.mark.parametrize('k', [KTH, KTF], ids=['Theano', 'TensorFlow'])
+    def test_gen_tensor_prod(self, k):
+        shape = (5, 4, 3, 2)
+        x = [i for i in range(shape[0]*shape[1]*shape[2])]
+        y = [i for i in range(shape[0]*shape[1]*shape[2]*shape[3])]
+        x = np.reshape(np.array(x), newshape=(shape[0], shape[1], shape[2]))
+        y = np.reshape(np.array(y), newshape=(shape[0], shape[1], shape[2], shape[3]))
+        X = k.variable(x)
+        Y = k.variable(y)
+        W = k.ones(shape=(4, 4, 4))
+
+        # test throws errors if axes are non-sensical
+        with pytest.raises(ValueError):
+            # non matching axes lengths
+            k.gen_tensor_prod(X, X, reduce_axes=[(0, 1)])
+        with pytest.raises(ValueError):
+            # x out of range
+            k.gen_tensor_prod(X, X, reduce_axes=[(5, 0)])
+        with pytest.raises(ValueError):
+            # y out of range
+            k.gen_tensor_prod(X, X, reduce_axes=[(0, 5)])
+        with pytest.raises(ValueError):
+            # non-matching axes lengths
+            k.gen_tensor_prod(X, X, elementwise_axes=[(0, 1)])
+        with pytest.raises(ValueError):
+            # x out of range
+            k.gen_tensor_prod(X, X, elementwise_axes=[(5, 0)])
+        with pytest.raises(ValueError):
+            # y out of range
+            k.gen_tensor_prod(X, X, elementwise_axes=[(0, 5)])
+        with pytest.raises(ValueError):
+            # duplicate x axis
+            k.gen_tensor_prod(W, W, elementwise_axes=[(0, 0), (0, 1)])
+        with pytest.raises(ValueError):
+            # duplicate y axis
+            k.gen_tensor_prod(W, W, elementwise_axes=[(0, 0), (1, 0)])
+        with pytest.raises(ValueError):
+            # duplicate x axis
+            k.gen_tensor_prod(W, W, reduce_axes=[(0, 0), (0, 1)])
+        with pytest.raises(ValueError):
+            # duplicate y axis
+            k.gen_tensor_prod(W, W, reduce_axes=[(0, 0), (1, 0)])
+        with pytest.raises(ValueError):
+            # x axis shared between elementwise and reduce
+            k.gen_tensor_prod(W, W, elementwise_axes=[(0, 0)], reduce_axes=[(0, 1)])
+        with pytest.raises(ValueError):
+            # y axis shared between elementwise and reduce
+            k.gen_tensor_prod(W, W, elementwise_axes=[(0, 0)], reduce_axes=[(1, 0)])
+
+
+        # (5, 4, 3) times (5, 4, 3, 2) with elementwise on index 0, 1 and reduce on index 2
+        # gives tensor of shape (5, 4, 2)
+        expected = np.array([
+            [
+                [
+                    sum(x[i, j, m]*y[i, j, m, n] for m in range(shape[2]))
+                    for n in range(shape[3])
+                ]
+                for j in range(shape[1])
+            ]
+            for i in range(shape[0])
+        ])
+
+        actual = k.eval(k.gen_tensor_prod(X, Y, reduce_axes=[2], elementwise_axes=[0, 1]))
+        assert_allclose(actual, expected, atol=1e-05)
+
+        # (5, 4, 3) times (5, 4, 3, 2) with elementwise on index 0 and reduce on index 1, 2
+        # gives tensor of shape (5, 2)
+        expected = np.array([
+            [
+                sum(x[i, j, m]*y[i, j, m, n] for m in range(shape[2]) for j in range(shape[1]))
+                for n in range(shape[3])
+            ]
+            for i in range(shape[0])
+        ])
+        actual = k.eval(k.gen_tensor_prod(X, Y, reduce_axes=[1, 2], elementwise_axes=[0]))
+        assert_allclose(actual, expected, atol=1e-05)
+
+        # (5, 4, 3) times (5, 4, 3, 2) with elementwise on index 0 and reduce on index 2
+        # gives tensor of shape (5, 4, 4, 2)
+        expected = np.array([
+            [
+                [
+                    [
+                        sum(x[i, j_1, m]*y[i, j_2, m, n] for m in range(shape[2]))
+                        for n in range(shape[3])
+                    ]
+                    for j_2 in range(shape[1])
+                ]
+                for j_1 in range(shape[1])
+            ]
+            for i in range(shape[0])
+        ])
+        actual = k.eval(k.gen_tensor_prod(X, Y, reduce_axes=[2], elementwise_axes=[0]))
+        assert_allclose(actual, expected, atol=1e-05)
+
+        # (5, 4, 3) times (5, 4, 3, 2) with no elementwise and no reduce
+        # gives tensor of shape (5, 4, 3, 5, 4, 3, 2)
+        expected = np.array([
+            [
+                [
+                    [
+                        [
+                            [
+                                [
+                                    x[i_1, j_1, m_1]*y[i_2, j_2, m_2, n]
+                                    for n in range(shape[3])
+                                ]
+                                for m_2 in range(shape[2])
+                            ]
+                            for j_2 in range(shape[1])
+                        ]
+                        for i_2 in range(shape[0])
+                    ]
+                    for m_1 in range(shape[2])
+                ]
+                for j_1 in range(shape[1])
+            ]
+            for i_1 in range(shape[0])
+        ])
+        actual = k.eval(k.gen_tensor_prod(X, Y, reduce_axes=None, elementwise_axes=None))
+        assert_allclose(actual, expected, atol=1e-05)
+
+        # (5, 4, 3) times (5, 4, 3) with no elementwise and reduce on all indices
+        # gives scalar value
+        expected = sum(
+            x[i, j, m]*x[i, j, m]
+            for m in range(shape[2])
+            for j in range(shape[1])
+            for i in range(shape[0]))
+        actual = k.eval(k.gen_tensor_prod(X, X, reduce_axes=[0, 1, 2], elementwise_axes=None))
+        assert_allclose(actual, expected, atol=1e-05)
+
+        # (5, 4, 3) times (5, 4, 3, 2) with elementwise on index 0, 1 and no reduce
+        # gives tensor of shape (5, 4, 3, 3, 2)
+        expected = np.array([
+            [
+                [
+                    [
+                        [
+                            x[i, j, m_1]*y[i, j, m_2, n]
+                            for n in range(shape[3])
+                        ]
+                        for m_2 in range(shape[2])
+                    ]
+                    for m_1 in range(shape[2])
+                ]
+                for j in range(shape[1])
+            ]
+            for i in range(shape[0])
+        ])
+
+        actual = k.eval(k.gen_tensor_prod(X, Y, reduce_axes=None, elementwise_axes=[0, 1]))
+        assert_allclose(actual, expected, atol=1e-05)
+
+        # (5, 4, 3) times (5, 4, 3) with elementwise on index 0, 1, 2 and no reduce
+        # gives tensor of shape (5, 4, 3), elementwise product
+        expected = np.array([
+            [
+                [
+                    x[i, j, m]*x[i, j, m]
+                    for m in range(shape[2])
+                ]
+                for j in range(shape[1])
+            ]
+            for i in range(shape[0])
+        ])
+        actual = k.eval(k.gen_tensor_prod(X, X, reduce_axes=None, elementwise_axes=[0, 1, 2]))
+        assert_allclose(actual, expected, atol=1e-05)
+
+        # Now jumble up the order of the second tensor so that the axes must be passed
+        # as lists of pairs
+        z = [i for i in range(shape[0]*shape[1]*shape[2]*shape[3])]
+        z = np.reshape(np.array(z), newshape=(shape[3], shape[2], shape[1], shape[0]))
+        Z = k.variable(z)
+
+        # (5, 4, 3) times (2, 3, 4, 5) with elementwise on index [(0, 3)] and reduce on index [(2, 1)]
+        # gives tensor of shape (5, 4, 2, 4)
+        expected = np.array([
+            [
+                [
+                    [
+                        sum(x[i, j_1, m]*z[n, m, j_2, i] for m in range(shape[2]))
+                        for j_2 in range(shape[1])
+                    ]
+                    for n in range(shape[3])
+                ]
+                for j_1 in range(shape[1])
+            ]
+            for i in range(shape[0])
+        ])
+        actual = k.eval(k.gen_tensor_prod(X, Z, reduce_axes=[(2, 1)], elementwise_axes=[(0, 3)]))
+        assert_allclose(actual, expected, atol=1e-05)
+
+        # (5, 4, 3) times (2, 3, 4, 5) with elementwise on index [(0, 3), (1, 2)] and reduce
+        # on index [(2, 1)] gives tensor of shape (5, 4, 2)
+        expected = np.array([
+            [
+                [
+                    sum(x[i, j, m]*z[n, m, j, i] for m in range(shape[2]))
+                    for n in range(shape[3])
+                ]
+                for j in range(shape[1])
+            ]
+            for i in range(shape[0])
+        ])
+        actual = k.eval(k.gen_tensor_prod(X, Z, reduce_axes=[(2, 1)], elementwise_axes=[(0, 3), (1, 2)]))
+        assert_allclose(actual, expected, atol=1e-05)
+
 
 if __name__ == '__main__':
     pytest.main([__file__])

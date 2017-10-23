@@ -16,6 +16,7 @@ except ImportError:
 
 import numpy as np
 from .common import floatx, epsilon, image_data_format
+from .common import _gen_tensor_prod_arg_helper
 from ..utils.generic_utils import has_arg
 # Legacy functions
 from .common import set_image_dim_ordering, image_dim_ordering
@@ -2504,3 +2505,92 @@ def local_conv2d(inputs, kernel, kernel_size, strides, output_shape, data_format
                          (output_row, output_col, -1, filters))
         output = permute_dimensions(output, (2, 0, 1, 3))
     return output
+
+
+def gen_tensor_prod(x, y, reduce_axes=None, elementwise_axes=None):
+    """Generalized tensor product
+
+    Given x with shape (b_1, ..., b_t, r_1, ..., r_s, f_1, ..., f_u)
+    and y with shape (b_1, ..., b_t, r_1, ..., r_s, g_1, ..., g_v)
+    returns product of shape (b_1, ..., b_t, f_1, ..., f_u, g_1, ..., g_v)
+    where
+    xy[(b_1, ..., b_t, f_1, ..., f_u, g_1, ..., g_v)]
+    = sum_{r_1, r_2, ..., r_s}
+        x[(b_1, ..., b_t, r_1, ..., r_s, f_1, ..., f_u)]
+        * xy[(b_1, ..., b_t, r_1, ..., r_s, g_1, ..., g_v)]
+
+    # Arguments
+        x: Keras tensor or variable.
+        y: Keras tensor or variable.
+        reduce_axes: None, int, list of ints, or list of pairs of ints
+            Shared axes between x and y that will be summed over.
+            If passed as list of pairs [(i_1, j_1), ..., (i_r, j_r)],
+            the axis i_k of x is paired with j_k of y, etc.
+            If passed as list of ints [i_1, i_2, ..., i_r]
+            then axis i of x is paired with i of y, etc.
+            If passed as int i, then axis i of x is paired with i of y.
+            In all cases, the paired axes must have the same length.
+        elementwise_axes: None, int, list of ints, or list of pairs of ints
+            Shared axes between x and y that will have elementwise product.
+            If passed as list of pairs [(i_1, j_1), ..., (i_r, j_r)],
+            the axis i_k of x is paired with j_k of y, etc.
+            If passed as list of ints [i_1, i_2, ..., i_r]
+            then axis i of x is paired with i of y, etc.
+            If passed as int i, then axis i of x is paired with i of y.
+            In all cases, the paired axes must have the same length.
+
+    # Returns
+        prod: Keras tensor
+
+    """
+
+    reduce_axes, elementwise_axes = _gen_tensor_prod_arg_helper(
+        int_shape(x), int_shape(y), reduce_axes, elementwise_axes)
+
+    r_axes = [[a[0] for a in reduce_axes], [a[1] for a in reduce_axes]]
+    e_axes = [[a[0] for a in elementwise_axes], [a[1] for a in elementwise_axes]]
+
+    if elementwise_axes:
+        def reshape_helper(t, r_ax, e_ax):
+            """
+            # parameters
+                t is a tensor, either the x or y in the product
+                r_ax is list of axes indices to be reduced
+                e_ax is list of axes indices to be paired elemwise
+            """
+            #r_ax_modified = [i for i in r_ax]
+            reordered = [i for i in range(ndim(t))]
+            # move all elemwise indices to tail
+            for i in e_ax:
+                reordered.append(reordered.pop(reordered.index(i)))
+            ts = t.dimshuffle(reordered)
+
+            # all elemwise are flattened to single index, then
+            # that index is moved from tail to head of tensor
+            # reordered is used to track where the reduce indices go.
+            # 's' is sentinel for combined elemwise
+            reordered = ['s'] + reordered[:(len(reordered) - len(e_ax))]
+            ts = ts.flatten(ndim=len(reordered))
+            flat_ind = [len(reordered) - 1] + [i for i in range(len(reordered) - 1)]
+            ts = ts.dimshuffle(flat_ind)
+
+            r_ax_modified = [reordered.index(i) for i in r_ax]
+            return ts, r_ax_modified
+
+        xs, x_r = reshape_helper(x, r_axes[0], e_axes[0])
+        ys, y_r = reshape_helper(y, r_axes[1], e_axes[1])
+        modified_reduce_axes = [x_r, y_r]
+
+        prod = T.batched_tensordot(xs, ys, axes=modified_reduce_axes)
+
+        x_shape = int_shape(x)
+        x_elem_shape = [x_shape[i] for (i, _) in elementwise_axes]
+        prod_shape = x_elem_shape + list(eval(prod.shape))[1:]
+        prod = prod.reshape(shape=prod_shape)
+
+    else:
+        prod = T.tensordot(x, y, axes=r_axes)
+
+    return prod
+
+

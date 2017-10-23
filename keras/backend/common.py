@@ -184,3 +184,110 @@ def image_dim_ordering():
         return 'th'
     else:
         return 'tf'
+
+def _gen_tensor_prod_arg_helper(x_shape, y_shape, reduce_axes=None, elementwise_axes=None):
+    """
+    Performs argument checking and reformats axes as necessary for gen_tensor_prod
+    (defined in the specific backend scripts
+    """
+
+    if (reduce_axes is None) or (reduce_axes == []):
+        reduce_axes = []
+    elif isinstance(reduce_axes, int):
+        reduce_axes = [(reduce_axes, reduce_axes)]
+    elif isinstance(reduce_axes, list) and isinstance(reduce_axes[0], int):
+        reduce_axes = [(r, r) for r in reduce_axes]
+
+    for (i, j) in reduce_axes:
+        try:
+            xs = x_shape[i]
+        except IndexError:
+            raise ValueError("""
+                Reduction index of {} on x exceeds {}, the ndim of x
+                """.format(i, len(x_shape)).strip())
+        try:
+            ys = y_shape[j]
+        except IndexError:
+            raise ValueError("""
+                Reduction index of {} on y exceeds {}, the ndim of y
+                """.format(j, len(y_shape)).strip())
+
+        if xs != ys:
+            raise ValueError("""
+                Cannot reduce x and y due to different axis lengths.   x has shape
+                {} in axis {} but y has shape {} in axis {}
+                """.format(xs, i, ys, j).strip())
+
+    if reduce_axes:
+        x_axes = [i for (i, _) in reduce_axes]
+        y_axes = [i for (_, i) in reduce_axes]
+        if len(x_axes) != len(set(x_axes)):
+            raise ValueError("""
+                Reduce axes for x cannot have duplicate entries, but have x axes {}
+                """.format(x_axes).strip())
+        if len(y_axes) != len(set(y_axes)):
+            raise ValueError("""
+                Reduce axes for y cannot have duplicate entries, but have y axes {}
+                """.format(x_axes).strip())
+
+    if (elementwise_axes is None) or (elementwise_axes == []):
+        elementwise_axes = []
+    elif isinstance(elementwise_axes, int):
+        elementwise_axes = [(elementwise_axes, elementwise_axes)]
+    elif isinstance(elementwise_axes, list) and isinstance(elementwise_axes[0], int):
+        elementwise_axes = [(j, j) for j in elementwise_axes]
+
+    for (i, j) in elementwise_axes:
+        try:
+            xs = x_shape[i]
+        except IndexError:
+            raise ValueError("""
+                Elementwise index of {} on x exceeds {}, the ndim of x
+                """.format(i, len(x_shape)).strip())
+        try:
+            ys = y_shape[j]
+        except IndexError:
+            raise ValueError("""
+                Elementwise index of {} on y exceeds {}, the ndim of y
+                """.format(j, len(y_shape)).strip())
+
+        if xs != ys:
+            raise ValueError("""
+                Cannot combine x and y elementwise due to different axis lengths.
+                x has shape {} in axis {} but y has shape {} in axis {}
+                """.format(xs, i, ys, j).strip())
+
+    if elementwise_axes:
+        x_axes = [i for (i, _) in elementwise_axes]
+        y_axes = [i for (_, i) in elementwise_axes]
+        if len(x_axes) != len(set(x_axes)):
+            raise ValueError("""
+                Elementwise axes for x cannot have duplicate entries, but have x axes {}
+                """.format(x_axes).strip())
+        if len(y_axes) != len(set(y_axes)):
+            raise ValueError("""
+                Elementwise axes for y cannot have duplicate entries, but have y axes {}
+                """.format(x_axes).strip())
+
+    if elementwise_axes + reduce_axes:
+        x_elem = [i for (i, _) in elementwise_axes]
+        y_elem = [i for (_, i) in elementwise_axes]
+        x_reduce = [i for (i, _) in reduce_axes]
+        y_reduce = [i for (_, i) in reduce_axes]
+        x_axes = x_elem + x_reduce
+        y_axes = y_elem + y_reduce
+
+        if len(x_axes) != len(set(x_axes)):
+            raise ValueError("""
+                Elementwise and reduce axes for x cannot share entries, but have
+                elementwise {} and reduce {} for x
+                """.format(x_elem, x_reduce).strip())
+        if len(y_axes) != len(set(y_axes)):
+            raise ValueError("""
+                Elementwise and reduce axes for y cannot share entries, but have
+                elementwise {} and reduce {} for y
+                """.format(y_elem, y_reduce).strip())
+
+    return reduce_axes, elementwise_axes
+
+

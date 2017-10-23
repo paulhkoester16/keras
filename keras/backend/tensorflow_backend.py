@@ -9,11 +9,14 @@ from tensorflow.python.ops import variables as tf_variables
 
 from collections import defaultdict
 
+from string import ascii_lowercase
 import numpy as np
 import os
 
 from .common import floatx, epsilon
 from .common import image_data_format
+from .common import _gen_tensor_prod_arg_helper
+
 from ..utils.generic_utils import has_arg
 
 # Legacy functions
@@ -3945,3 +3948,72 @@ def local_conv2d(inputs, kernel, kernel_size, strides, output_shape, data_format
     else:
         output = permute_dimensions(output, (2, 0, 1, 3))
     return output
+
+def gen_tensor_prod(x, y, reduce_axes=None, elementwise_axes=None):
+    """Generalized tensor product
+
+    Given x with shape (b_1, ..., b_t, r_1, ..., r_s, f_1, ..., f_u)
+    and y with shape (b_1, ..., b_t, r_1, ..., r_s, g_1, ..., g_v)
+    returns product of shape (b_1, ..., b_t, f_1, ..., f_u, g_1, ..., g_v)
+    where
+    xy[(b_1, ..., b_t, f_1, ..., f_u, g_1, ..., g_v)]
+    = sum_{r_1, r_2, ..., r_s}
+        x[(b_1, ..., b_t, r_1, ..., r_s, f_1, ..., f_u)]
+        * xy[(b_1, ..., b_t, r_1, ..., r_s, g_1, ..., g_v)]
+
+    # Arguments
+        x: Keras tensor or variable.
+        y: Keras tensor or variable.
+        reduce_axes: None, int, list of ints, or list of pairs of ints
+            Shared axes between x and y that will be summed over.
+            If passed as list of pairs [(i_1, j_1), ..., (i_r, j_r)],
+            the axis i_k of x is paired with j_k of y, etc.
+            If passed as list of ints [i_1, i_2, ..., i_r]
+            then axis i of x is paired with i of y, etc.
+            If passed as int i, then axis i of x is paired with i of y.
+            In all cases, the paired axes must have the same length.
+        elementwise_axes: None, int, list of ints, or list of pairs of ints
+            Shared axes between x and y that will have elementwise product.
+            If passed as list of pairs [(i_1, j_1), ..., (i_r, j_r)],
+            the axis i_k of x is paired with j_k of y, etc.
+            If passed as list of ints [i_1, i_2, ..., i_r]
+            then axis i of x is paired with i of y, etc.
+            If passed as int i, then axis i of x is paired with i of y.
+            In all cases, the paired axes must have the same length.
+
+    # Returns
+        prod: Keras tensor
+
+    """
+
+    reduce_axes, elementwise_axes = _gen_tensor_prod_arg_helper(
+        int_shape(x), int_shape(y), reduce_axes, elementwise_axes)
+
+    alpha = list(ascii_lowercase)
+    y_shared = {j: i for (i, j) in reduce_axes + elementwise_axes}
+    x_ind, y_ind, out_ind = [], [], []
+    for i in range(ndim(x)):
+        x_ind.append(alpha.pop(0))
+        if i not in [a for (a, b) in reduce_axes]:
+            out_ind.append(x_ind[-1])
+
+    for i in range(ndim(y)):
+        try:
+            y_ind.append(x_ind[y_shared[i]])
+        except KeyError:
+            y_ind.append(alpha.pop(0))
+            out_ind.append(y_ind[-1])
+
+    if len(set(x_ind + y_ind)) > 26:
+        raise ValueError("""
+            The combined number of dimensions of x and y, less the number of shared
+            dimensions between the reduce_axes and the elementwise_axes cannot
+            exceed 26.  Got {} + {} - {} - {} = {}""".format(
+            ndim(x), ndim(y), len(reduce_axes), len(elementwise_axes),
+            ndim(x) + ndim(y) - len(reduce_axes) - len(elementwise_axes)).strip())
+
+    formula = ''.join(x_ind) + ',' + ''.join(y_ind) + '->' + ''.join(out_ind)
+
+    prod = tf.einsum(formula, x, y)
+    return prod
+
